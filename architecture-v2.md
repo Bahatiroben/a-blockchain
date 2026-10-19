@@ -923,3 +923,634 @@ This is the Ethereum-style **account model**, in contrast to Bitcoin's UTXO mode
 - **Part F:** what could a malicious sender do if transfers had no nonce?
 
 If any title above is mislabeled, or you can tell me what EP14 and the missing two videos are, I will update this section.
+
+---
+
+## 11. Blockchain from zero: a learning path (read this BEFORE sections 4 to 10)
+
+This part assumes you are a competent software engineer and know nothing about blockchains. It teaches the ideas in the order they depend on each other, using only Go's standard library, so that when you reach the ProjectX walkthrough (section 10) every piece is already something you understand and could have invented.
+
+**How to use it.** Each module has: *the idea* (intuition first), *what you must be able to explain*, *a Go exercise*, and *how it shows up in a blockchain*. Do the exercises. Reading alone will not make this stick. Plan on roughly 10 to 12 weeks part-time, but skip modules you already know well.
+
+**The learning path at a glance**
+
+| # | Module | Gives you |
+| --- | --- | --- |
+| 0 | The problem and the history | why any of this exists |
+| 1 | Hash functions | tamper evidence |
+| 2 | Digital signatures | identity and authorisation |
+| 3 | Hash-linked data: chains and Merkle trees | the "block" and "chain" |
+| 4 | Serialisation and determinism | agreement on bytes |
+| 5 | Ledgers and state machines | what the chain actually computes |
+| 6 | Distributed systems basics | why agreement is hard |
+| 7 | Consensus | who decides the next block |
+| 8 | Networking | gossip and sync |
+| 9 | Mempool, fees and incentives | why people behave |
+| 10 | Execution and smart contracts | programmable chains |
+| 11 | Storage | persistence and state proofs |
+| 12 | Security thinking | what attackers do |
+| 13 | Uses and non-uses | when to use one |
+| 14 | Go skills checklist | the language tools you need |
+| 15 | Capstone ladder | build your own, step by step |
+
+---
+
+### Module 0: The problem, and how the field evolved
+
+#### 0.1 The problem blockchains solve
+
+Imagine a shared notebook that records who owns what. Today a bank, a company or a government holds that notebook, and everyone trusts it. Three things can go wrong with a trusted keeper: it can **lie or be hacked** (edit history), it can **refuse service** (censor you), or it can **fail** (lose the notebook).
+
+Now remove the keeper. Hundreds of strangers each hold a copy of the notebook. Immediately you hit hard questions:
+
+1. **Who may write?** (Authorisation without accounts and passwords.)
+2. **How do I know the history was not altered?** (Integrity.)
+3. **When two people write conflicting entries at the same moment, which wins?** (Agreement, called *consensus*.)
+4. **Why would anyone bother to run a copy honestly?** (Incentives.)
+
+A blockchain is the combined answer: signatures for 1, hash-linking for 2, a consensus protocol for 3, and economic rewards for 4.
+
+**The double-spend problem** is the classic hard case. Digital files copy for free. If I hold a token and send it to both Alice and Bob, who really received it? Physical cash cannot do this. With a trusted bank, the bank just refuses the second payment. Without a bank, the *network* must agree on a single ordering of payments, so the second one is rejected. Order is everything. This is why blockchains are fundamentally about **agreeing on an order of events**.
+
+#### 0.2 A short history (so you know where each idea came from)
+
+| Year | Event | Why it matters |
+| --- | --- | --- |
+| 1979 | Merkle trees (Ralph Merkle) | efficient proof that data is part of a set |
+| 1982 | Byzantine Generals Problem (Lamport, Shostak, Pease) | formal statement of agreeing when some participants lie |
+| 1983 to 1990s | David Chaum's digital cash (eCash, DigiCash) | anonymous digital money, but centrally issued |
+| 1991 | Haber and Stornetta: timestamping documents with hash-linked records | the chain-of-hashes idea |
+| 1994 | Nick Szabo's "smart contracts" concept | programmable agreements |
+| 1997 | Adam Back's Hashcash | proof of work as anti-spam |
+| 1998 to 2005 | b-money (Wei Dai), Bit Gold (Szabo), RPOW (Hal Finney) | near-misses at decentralised digital money |
+| 1999 | PBFT (Castro and Liskov) | practical Byzantine fault tolerance |
+| 2008 | Bitcoin whitepaper by "Satoshi Nakamoto" | combines the pieces into a working decentralised currency |
+| 2009 | Bitcoin network launches (genesis block, January) | first working public blockchain |
+| 2013 to 2015 | Ethereum proposed (Vitalik Buterin) and launched (2015) | general-purpose programmable blockchain |
+| 2016 | "The DAO" exploit and the resulting Ethereum fork | smart-contract bugs are real money; "code is law" debate |
+| 2017 | ICO boom; many other chains (e.g. Cosmos, Polkadot lines of work) | explosion of tokens and platform experiments |
+| 2020 to 2021 | DeFi and NFTs go mainstream | lending, exchanges and collectibles as contracts |
+| 2022 | Ethereum moves from proof of work to proof of stake ("the Merge") | major consensus change on a live network |
+| 2020s | Rollups / layer-2s, and modular designs that separate execution, settlement, consensus and data availability | scaling by splitting responsibilities |
+
+The key conceptual leap in 2008 was not a new primitive. Hashes, signatures, Merkle trees, proof of work and peer-to-peer networks all existed. Bitcoin's contribution was a **combination that made the order of transactions agreeable among strangers, with incentives that keep them honest.** Ethereum's leap was making the chain compute arbitrary programs, not just track balances.
+
+You will notice the series you are following is called a *modular* blockchain: that word describes this last trend, where consensus, networking, execution and storage are separate swappable components.
+
+**You must be able to explain:** the double-spend problem; why ordering is the core difficulty; what each of the four sub-problems (authorisation, integrity, agreement, incentives) is solved by.
+
+---
+
+### Module 1: Hash functions
+
+#### The idea
+
+A cryptographic hash function takes any bytes and returns a fixed-size "fingerprint" (SHA-256 gives 32 bytes). Properties you rely on:
+
+- **Deterministic:** the same input always gives the same output.
+- **Fast to compute.**
+- **Avalanche effect:** change one bit of input and roughly half the output bits flip.
+- **Preimage resistance:** given a hash, you cannot practically find an input that produces it.
+- **Collision resistance:** you cannot practically find two different inputs with the same hash.
+
+Think of a hash as a **commitment**: publishing `H(data)` locks you into `data` without revealing it, and anyone holding `data` can verify.
+
+#### What it is used for in a blockchain
+
+1. **Block identity:** a block is referred to by the hash of its header.
+2. **Linking:** each block stores the previous block's hash.
+3. **Summarising data:** a header holds a hash of all its transactions.
+4. **Proof of work:** finding a hash below a target is the "work".
+5. **Addresses:** derived from hashes of public keys.
+
+#### Exercise 1.1: see the avalanche
+
+```go
+package main
+
+import (
+    "crypto/sha256"
+    "fmt"
+)
+
+func main() {
+    fmt.Printf("%x\n", sha256.Sum256([]byte("hello")))
+    fmt.Printf("%x\n", sha256.Sum256([]byte("hellp")))
+}
+```
+
+Run it, then write a function that counts how many bits differ between the two outputs (XOR the bytes and count set bits with `math/bits.OnesCount8`). Expect roughly 128 of 256.
+
+#### Exercise 1.2: a commitment
+
+Write `Commit(secret []byte, nonce []byte) [32]byte` and `Verify(...)`. Explain why you need the random nonce (hint: otherwise someone can brute-force small secrets such as "yes" or "no").
+
+**You must be able to explain:** why you cannot "decrypt" a hash; why one-bit changes break everything downstream; what a collision attack would mean for a blockchain.
+
+---
+
+### Module 2: Digital signatures
+
+#### The idea
+
+You generate a **private key** (a big secret number) and derive a **public key** from it by a one-way mathematical operation. Properties:
+
+- Only the private key can produce a valid signature over a message.
+- Anyone with the public key can verify the signature.
+- Changing even one bit of the message invalidates the signature.
+- You cannot compute the private key from the public key.
+
+This replaces accounts and passwords. **Your identity is your public key (or an address derived from it).** Authorisation is "can you produce a valid signature for this exact message?" No server needs to know you.
+
+#### Elliptic curves, practically
+
+You do not need the mathematics on day one. Know: modern signatures (ECDSA, Ed25519) use elliptic curves because they give strong security with small keys. Bitcoin and Ethereum use the secp256k1 curve; Go's standard library gives you P-256 (`crypto/ecdsa`, `crypto/elliptic`) and Ed25519 (`crypto/ed25519`). For learning, either is fine.
+
+#### An address
+
+An **address** is typically a hash of the public key, truncated. It is shorter and adds a layer of indirection. Chains differ in the details.
+
+#### Exercise 2.1: sign and verify
+
+```go
+pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+msg := []byte("send 5 coins to Bob")
+sig := ed25519.Sign(priv, msg)
+fmt.Println(ed25519.Verify(pub, msg, sig))                  // true
+fmt.Println(ed25519.Verify(pub, []byte("send 500"), sig))   // false
+```
+
+Then repeat with ECDSA on P-256 (`ecdsa.GenerateKey`, `ecdsa.SignASN1`, `ecdsa.VerifyASN1`) and derive an address with `sha256.Sum256(pubBytes)[12:]`.
+
+#### The replay problem
+
+A valid signature is valid forever. If you sign "pay Bob 5", an attacker can resubmit the same signed message again and again. Two standard fixes: include a **nonce** (a per-account counter) in the signed data, and include a **chain ID** so a signature on one network cannot be replayed on another. Make sure you can explain why signing alone is not enough.
+
+**You must be able to explain:** why a private key leak is total and unrecoverable; why you sign a hash or canonical bytes, not a loose struct; why replay protection exists.
+
+---
+
+### Module 3: Hash-linked data structures
+
+#### 3.1 The hash chain (the "chain" in blockchain)
+
+Each record stores the hash of the previous record. To alter record 5, you must change its hash, which changes record 6's stored link, which changes its hash, and so on. History becomes **tamper-evident**: you can detect any change by recomputing.
+
+Note carefully: a hash chain alone does **not** prevent tampering. Anyone can recompute every later hash after editing. What it gives you is *detection against anyone who holds a copy of the latest hash*. Preventing a rewrite from being accepted is consensus's job (modules 6 and 7).
+
+```go
+type Block struct {
+    Index    uint64
+    Data     []byte
+    PrevHash [32]byte
+    Hash     [32]byte
+}
+
+func (b *Block) ComputeHash() [32]byte {
+    h := sha256.New()
+    binary.Write(h, binary.BigEndian, b.Index)
+    binary.Write(h, binary.BigEndian, uint64(len(b.Data))) // length prefix avoids ambiguity
+    h.Write(b.Data)
+    h.Write(b.PrevHash[:])
+    var out [32]byte
+    copy(out[:], h.Sum(nil))
+    return out
+}
+```
+
+**Exercise 3.1:** build a `Chain` type with `Append(data)` and `Validate() bool`. Create 10 blocks, then edit block 3's data and show `Validate` fails and exactly where. Then try to "fix" it by recomputing hashes from block 3 onward, and see it pass. This is the demonstration that makes the need for consensus concrete.
+
+#### 3.2 Merkle trees
+
+A block can hold thousands of transactions. A **Merkle tree** summarises them into one root hash: hash each transaction (the leaves), then hash pairs of hashes upward until one hash remains.
+
+Why this beats hashing all the data together: you can prove that a transaction is in a block by supplying just the **sibling hashes along its path** (about log2(n) hashes). A phone app can verify a payment without downloading the whole chain. This is called a *Merkle proof*, and it underlies light clients.
+
+```go
+func merkleRoot(leaves [][32]byte) [32]byte {
+    if len(leaves) == 0 {
+        return [32]byte{}
+    }
+    level := leaves
+    for len(level) > 1 {
+        var next [][32]byte
+        for i := 0; i < len(level); i += 2 {
+            l := level[i]
+            r := l // duplicate the last node if the count is odd
+            if i+1 < len(level) {
+                r = level[i+1]
+            }
+            next = append(next, sha256.Sum256(append(l[:], r[:]...)))
+        }
+        level = next
+    }
+    return level[0]
+}
+```
+
+**Exercise 3.2:** implement `Proof(leaves, index) [][32]byte` and `VerifyProof(root, leaf, index, proof) bool`. Write tests that fail when you flip one bit of the leaf, the proof, or the root.
+
+**A subtlety to be aware of:** naive duplication of odd nodes has a known second-preimage / duplicate-leaf weakness in Bitcoin's design. Real systems add domain-separation prefixes (leaf versus internal-node markers). Add a `0x00` byte before hashing leaves and `0x01` before hashing internal nodes in your own version and say why.
+
+**You must be able to explain:** the difference between hash-chaining and hash-*tree*-ing; what a block header contains and why it can be so small; what a Merkle proof proves and does not prove.
+
+---
+
+### Module 4: Serialisation and determinism
+
+#### The idea
+
+Hashes and signatures operate on **bytes**. Two nodes that hold "the same" transaction must produce **byte-identical** encodings or their hashes (and signatures) will differ. Therefore your encoding must be *canonical*: exactly one valid byte sequence per value.
+
+Things that quietly break this:
+
+- **Map iteration order** in Go is randomised. Never serialise a `map` by ranging over it; sort the keys first.
+- **Floating point** differs across hardware and is rounded. Use integers (for money, use the smallest unit).
+- **Struct field order and padding.** Encode fields explicitly in a fixed order.
+- **Endianness.** Always pick one (big-endian is common) and stay with it.
+- **Variable-length data without a length prefix** is ambiguous: `("ab","c")` and `("a","bc")` concatenate to the same bytes.
+- **Time:** `time.Now()` is different on every machine. A block carries its own timestamp as data.
+
+Real chains use purpose-built formats (Ethereum's RLP, Protobuf, SSZ, Bincode). Go's `encoding/gob` is convenient but not designed as a cross-version wire format, which is acceptable for learning and a reason the ProjectX TODO mentions protobuf.
+
+#### Exercise 4.1
+
+Write `func (tx *Tx) Bytes() []byte` using `encoding/binary` and length prefixes. Prove it is canonical with a test that round-trips thousands of random transactions. Then deliberately break it (serialise a map by ranging) and find the flaky test.
+
+**You must be able to explain:** why two honest nodes could disagree on a hash even though they see the same transaction.
+
+---
+
+### Module 5: Ledgers and state machines
+
+#### The big reframing
+
+Stop thinking "a chain of blocks". Think: **a blockchain is a log of transactions that drives a state machine.**
+
+```
+state_(n+1) = apply(state_n, transaction)
+```
+
+If every node starts with the same genesis state and applies the same transactions in the same order using the same deterministic `apply`, every node ends with the same state. That is the whole point of the chain: it is the agreed *order of inputs* to a deterministic machine. This idea is called **state machine replication**, and it predates blockchains.
+
+#### Two ledger models
+
+- **Account model** (Ethereum, and ProjectX's later videos): the state is a map `address -> {balance, nonce}`. A transfer subtracts from one entry and adds to another. Simple to reason about.
+- **UTXO model** (Bitcoin): there are no balances. The state is a set of *unspent transaction outputs*, like banknotes. A transaction consumes some outputs and creates new ones. Naturally parallel and easy to verify independently, but less natural for programs.
+
+#### Exercise 5.1: your first state machine
+
+```go
+type Tx struct {
+    From, To string
+    Amount   uint64
+    Nonce    uint64
+}
+
+type State struct {
+    Balances map[string]uint64
+    Nonces   map[string]uint64
+}
+
+var (
+    ErrBadNonce = errors.New("bad nonce")
+    ErrFunds    = errors.New("insufficient funds")
+)
+
+func (s *State) Apply(tx Tx) error {
+    if tx.Nonce != s.Nonces[tx.From] {
+        return ErrBadNonce
+    }
+    if s.Balances[tx.From] < tx.Amount {
+        return ErrFunds
+    }
+    if s.Balances[tx.To]+tx.Amount < s.Balances[tx.To] {
+        return errors.New("overflow")
+    }
+    s.Balances[tx.From] -= tx.Amount
+    s.Balances[tx.To] += tx.Amount
+    s.Nonces[tx.From]++
+    return nil
+}
+```
+
+Extend it: apply a *block* of transactions atomically (if any tx is invalid, either reject the whole block or define exactly how invalid txs are skipped, and say which is better and why). Add a copy-on-write or undo log so you can roll back a failed block.
+
+#### Exercise 5.2: demonstrate double spending
+
+Give Alice 10 coins. Create two transactions from Alice (to Bob and to Carol) both for 10. Show that applying them in different orders yields different outcomes, then show that agreeing on *one order* makes one fail deterministically. **Now you have rediscovered why consensus exists.**
+
+**You must be able to explain:** why a nonce makes the order of one account's transactions unambiguous; what "deterministic" has to mean for `Apply`; the pros and cons of account versus UTXO.
+
+---
+
+### Module 6: Distributed systems basics
+
+You are a software engineer, so some of this will be familiar. Here it is through the blockchain lens.
+
+- **Asynchrony:** messages can be delayed, reordered, duplicated or lost. There is no shared clock.
+- **Failure models:** *crash faults* (a node stops) are the easier case. *Byzantine faults* (a node lies, colludes, or sends different answers to different peers) are the blockchain case, because any participant may be an attacker.
+- **Replication:** keeping copies on many machines for availability. The hard part is keeping them consistent.
+- **Safety vs liveness:** *safety* means "nothing bad ever happens" (two nodes never finalise conflicting blocks). *Liveness* means "something good eventually happens" (new blocks keep being produced). Protocols often trade one for the other under bad network conditions.
+- **CAP and FLP, in one paragraph each.** CAP: during a network partition you must choose between consistency and availability. FLP: in a fully asynchronous network, no deterministic protocol can guarantee consensus if even one node may crash. Real protocols escape FLP with timeouts, randomness or synchrony assumptions. Do not memorise the proofs; understand why the results force every consensus protocol to make assumptions.
+- **Quorums:** many protocols require agreement from more than half, or more than two-thirds, of participants. The two-thirds number appears because tolerating `f` Byzantine nodes requires `n >= 3f + 1` participants.
+- **Gossip:** each node forwards what it learns to a few peers, so information spreads exponentially without a central coordinator.
+
+#### Exercise 6.1: simulate a flaky network in one process
+
+Build N goroutine "nodes" connected by channels. Write a `Network` wrapper that randomly delays, drops or duplicates messages. Implement gossip of a single value and measure how many rounds until all nodes have it, for different drop rates.
+
+#### Exercise 6.2: watch consensus fail
+
+Give each of 5 nodes a different proposed value and let them "agree" by taking whichever they hear first. Show with a flaky network that they end up with different values. Then add a coordinator (a leader that picks) and show what breaks if the leader crashes. These two failures motivate the next module.
+
+**You must be able to explain:** the difference between crash and Byzantine faults; safety versus liveness; why 3f+1; why "just use a database" works when you trust the operator and fails when you do not.
+
+---
+
+### Module 7: Consensus (the heart of the subject)
+
+#### The problem, stated precisely
+
+A set of nodes, some possibly malicious, must agree on a single growing sequence of blocks. A consensus protocol should provide:
+
+- **Agreement (safety):** honest nodes never finalise conflicting histories.
+- **Validity:** only valid blocks (valid signatures, valid transactions) are accepted.
+- **Liveness:** the chain keeps growing.
+
+The central design question is: **who gets to propose the next block, and how does everyone else decide to accept it?** Four families answer it.
+
+#### 7.1 Single leader / Proof of Authority (the ProjectX approach)
+
+A fixed, known list of validators. One (or a rotating one, round-robin by height) is allowed to produce each block; its signature proves it. Simple, fast and deterministic, but it trusts the validator set. This is how permissioned and consortium chains work, and it is the right *first* thing to implement.
+
+**Exercise 7.1:** extend your chain so a block is valid only if signed by the validator whose index equals `height % numValidators`. Show that a block from the wrong validator is rejected. Then show the failure mode: if that validator is offline, the chain stalls (a liveness problem). Add a timeout that skips to the next validator and state what new safety risk that creates.
+
+#### 7.2 Proof of Work (Nakamoto consensus)
+
+Bitcoin's idea. Anyone may propose a block, but to be valid its header hash must be below a **target**. Finding such a hash requires brute-forcing a `nonce` field, which costs real computation. Properties:
+
+- Block production is a lottery weighted by computing power, not by identity. No membership list is needed (**permissionless**).
+- **Difficulty adjustment:** the target is retuned periodically (Bitcoin targets about 10 minutes per block) so the block rate stays stable as total hash power changes.
+- **Fork choice rule:** if two valid blocks appear at once (a *fork*), nodes follow the chain with the most accumulated work (loosely, "the longest chain"). Eventually one branch outgrows the other and the short one is abandoned (a *reorg*).
+- **Probabilistic finality:** a transaction is never 100 percent final; it becomes exponentially harder to reverse with each block built on top, so people wait several confirmations.
+- **The 51 percent attack:** an attacker with a majority of the work can out-build the honest chain and rewrite recent history (and double-spend). The cost of the attack is what secures the chain.
+- **Incentive:** the miner who finds a block collects a block reward and fees. Spending real electricity makes dishonesty expensive and honesty profitable.
+
+```go
+func mine(header []byte, bits uint) (nonce uint64, hash [32]byte) {
+    target := new(big.Int).Lsh(big.NewInt(1), 256-bits) // hash must be below 2^(256-bits)
+    buf := make([]byte, len(header)+8)
+    copy(buf, header)
+    for nonce = 0; ; nonce++ {
+        binary.BigEndian.PutUint64(buf[len(header):], nonce)
+        hash = sha256.Sum256(buf)
+        if new(big.Int).SetBytes(hash[:]).Cmp(target) < 0 {
+            return nonce, hash
+        }
+    }
+}
+```
+
+**Exercise 7.2:** (a) mine blocks at 16, 20 and 24 bits and time them, so you *feel* that each extra bit doubles the work; (b) implement `Verify` (one hash, instantly) and notice the asymmetry: hard to produce, trivial to check; (c) build two competing chains from the same parent and write `chooseChain` using total work; (d) write a difficulty adjustment that changes `bits` every N blocks based on measured time.
+
+#### 7.3 Proof of Stake
+
+Replace computation with **locked-up money**. Validators put coins at stake; the protocol selects proposers (randomly, weighted by stake) and has other validators vote. Misbehaviour such as signing two conflicting blocks is punished by **slashing** (destroying stake). Security comes from the cost of losing stake, not from burning electricity. It is far more energy-efficient, but has its own subtle problems (such as "nothing at stake", long-range attacks and the need for a careful randomness source), which is why real designs are complicated.
+
+#### 7.4 BFT-style voting (Tendermint, PBFT family)
+
+A known validator set runs rounds: a proposer sends a block, validators **vote** in two phases, and if more than two thirds agree the block is **final immediately**. No forks in normal operation. This is where the 3f+1 rule from module 6 shows up. The trade-off: it needs a known validator set and many messages per block, so it scales to tens or hundreds of validators, not millions. Cosmos chains use this style.
+
+#### Choosing between them
+
+| Property | PoA | PoW | PoS | BFT voting |
+| --- | --- | --- | --- | --- |
+| Who can validate | fixed list | anyone with hardware | anyone with stake | known set (often stake-weighted) |
+| Finality | immediate (trusted) | probabilistic | economic or immediate | immediate |
+| Energy use | tiny | large | tiny | tiny |
+| Complexity to build | lowest | low | high | high |
+| Trust assumption | the operators | majority honest hash power | majority honest stake | fewer than a third Byzantine |
+
+**You must be able to explain:** why proof of work has to be expensive to produce but cheap to verify; what a fork is and how it resolves; why finality differs between PoW and BFT; what each approach assumes about the attacker.
+
+---
+
+### Module 8: Peer-to-peer networking
+
+The chain is useless if nodes cannot exchange data. This is also the module where the ProjectX "Transport" interface will make complete sense.
+
+#### 8.1 Building blocks
+
+- **TCP in Go:** `net.Listen`, `Accept`, `net.Dial`, one goroutine per connection.
+- **Message framing:** TCP is a stream, not a message boundary. You must frame messages yourself, usually with a **length prefix**: `[4 bytes length][1 byte type][payload]`. Use `io.ReadFull` to read exactly n bytes and always enforce a maximum message size, or one peer can exhaust your memory.
+- **Handshake:** exchange version, network ID, genesis hash and current height when two nodes connect, so incompatible nodes disconnect immediately.
+- **Peer management:** track connected peers, remove dead ones, limit the connection count.
+- **Discovery:** start from hard-coded *bootstrap nodes*, ask peers for more peers, and connect. Real networks use structured protocols (for example Kademlia DHTs).
+
+#### 8.2 Gossip and sync
+
+- **Transaction gossip:** receive a tx, validate, ignore if already known, store, forward to peers. The "ignore if known" step prevents infinite loops.
+- **Block gossip:** the same, for blocks.
+- **Initial sync:** a new node starts at genesis, asks a peer for its height, then requests missing blocks in ranges and validates each as it arrives. Do not trust the peer; verify everything.
+
+#### Exercise 8.1: framed messages
+
+Write `WriteMsg(w io.Writer, typ byte, payload []byte) error` and `ReadMsg(r io.Reader) (typ byte, payload []byte, err error)` with a 1 MB limit. Test with a reader that returns one byte at a time (use `iotest.OneByteReader`) to prove you handle partial reads.
+
+#### Exercise 8.2: three-node gossip
+
+Start three TCP nodes that each connect to one other. Submit a transaction to node 1 and watch all three pools receive it exactly once. Log duplicates dropped.
+
+#### Exercise 8.3: sync
+
+Run node A, mine 50 blocks, then start empty node B pointed at A and verify B reaches height 50 with an identical tip hash.
+
+**You must be able to explain:** why length-prefixing is required; how gossip avoids amplification; why a syncing node cannot trust blindly; what a handshake protects against.
+
+---
+
+### Module 9: The mempool, fees and incentives
+
+- **Mempool:** each node keeps a pool of valid, unconfirmed transactions. The block producer chooses which to include.
+- **Why fees exist:** block space is scarce, and validators or miners need payment. Transactions compete: higher fee, earlier inclusion. Without fees, spam is free and the chain can be flooded.
+- **Ordering power:** whoever builds the block chooses the order, which can be worth money (reordering, front-running). This is called **MEV** (miner or maximal extractable value). Just know it exists and why it matters for fairness.
+- **Inflation and rewards:** many chains create new coins as a block reward (the *coinbase* transaction; this is the "coinbase" in the ProjectX series). Rewards bootstrap security before fees are large.
+- **Game theory mindset:** the right question for every protocol rule is, "If every participant maximises their own profit, does the system still behave?"
+
+**Exercise 9.1:** give your mempool a per-transaction fee, order by fee per byte, cap the block size, and show that low-fee transactions wait. Then add per-account nonce ordering (a tx with nonce 5 cannot be included before nonce 4) and explain why that makes priority ordering more complicated.
+
+---
+
+### Module 10: Execution and smart contracts
+
+#### The idea
+
+If `apply(state, tx)` is a fixed function ("subtract from A, add to B"), you have a money ledger. If `apply` is *a virtual machine running code supplied inside the transaction*, you have a **general-purpose, programmable, shared computer**. That code is a *smart contract*: a program stored on-chain, with its own persistent storage, that anyone can call and that executes identically on every node.
+
+#### Requirements for such a VM
+
+- **Deterministic:** no clocks, no randomness, no network, no filesystem. Everything it can see comes from the transaction and the chain state.
+- **Sandboxed:** contract code is hostile by default and must not escape.
+- **Metered:** an infinite loop would freeze the network, so each instruction costs **gas**; a transaction states a gas limit, the VM stops at the limit, and the sender pays for what was used. This also prices computation fairly.
+- **Atomic:** if execution fails, its state changes are rolled back.
+
+#### Stack machines in thirty seconds
+
+Programs are byte arrays of opcodes. Operands live on a stack. `PUSH 3, PUSH 2, ADD` leaves 5. It is simple to implement and verify, which is why the EVM, the JVM and WebAssembly are all stack-based.
+
+#### Exercise 10.1: a tiny VM with gas
+
+Implement opcodes `PUSH`, `ADD`, `SUB`, `MUL`, `JUMP`, `JUMPI`, `STORE`, `LOAD`, `HALT`. Give each a gas cost. Run a program with an infinite loop and prove it halts with an out-of-gas error. Then make `STORE` write to a `map[string]uint64` and show a failed execution does not leave partial writes (snapshot and restore, or buffer writes and commit at the end).
+
+**Know the risks:** contract bugs are permanent and public. Reentrancy, integer overflow and access-control mistakes have cost real money (the 2016 DAO incident is the canonical story). That is a strong reason to keep early contract logic minimal.
+
+---
+
+### Module 11: Storage
+
+- **In memory first.** Slices and maps are fine to start.
+- **Persistence:** blocks are append-only, so a simple file-per-segment or a key-value store works. Chain data and state are usually in an embedded key-value database (for example LevelDB or RocksDB families; in Go, BoltDB-like stores are common). For learning, write an append-only log file with a length-prefixed record format yourself first.
+- **State needs a different structure than blocks.** State changes every block and you need to prove "the balance of X at block N is Y". Ethereum uses a **Merkle-Patricia trie** so the entire state has a single root hash included in the block header. Clients can then verify any piece of state with a Merkle proof against that root. You do not need to build a trie in version 1, but understand what it is for.
+- **Pruning and snapshots:** full history grows forever. Real nodes prune old state or sync from snapshots.
+- **Indexing:** `hash -> block`, `height -> hash`, `tx hash -> block` lookups are separate indexes.
+
+**Exercise 11.1:** write blocks to disk, kill the process, restart, and rebuild the chain by replaying the file, verifying every hash on the way in. Then truncate the last few bytes of the file to simulate a crash mid-write and make your loader recover safely.
+
+---
+
+### Module 12: Security thinking
+
+Blockchains are adversarial systems: assume every input comes from an attacker. A checklist you should be able to reason about:
+
+| Threat | What happens | Typical defence |
+| --- | --- | --- |
+| Replay | an old signed tx is resubmitted | nonce, chain ID |
+| Signature malleability | same tx, different valid signature bytes, so a different hash | canonical signatures, hash only canonical data |
+| Double spend | conflicting txs | consensus and finality rules |
+| 51 percent or validator takeover | history rewritten | cost of attack, fault tolerance threshold |
+| Sybil attack | one actor fakes many identities | cost per identity (work, stake) |
+| Eclipse attack | all of a node's peers are attacker-controlled | diverse and random peer selection |
+| DoS: oversized or malformed messages | node crashes or stalls | size limits, validate cheaply first, rate limits |
+| DoS: expensive transactions | VM spins | gas metering |
+| Consensus divergence bug | nodes compute different states | determinism and heavy testing |
+| Key theft | funds stolen | key management, hardware wallets |
+| Smart contract bugs | funds drained | audits, simpler contracts, formal methods |
+
+A good habit while building: for every function that takes remote input, ask "what is the most hostile input possible, and what is the cheapest check I can do first?" Order your validation from cheap (length, type) to expensive (signature, VM execution).
+
+---
+
+### Module 13: What blockchains are for (and not for)
+
+**Where the trade-offs can pay off:**
+
+- **Digital cash and value transfer** without an issuing intermediary.
+- **Programmable assets:** tokens, stablecoins, NFTs, tickets, loyalty points.
+- **Open finance:** exchanges, lending and derivatives implemented as public contracts anyone can audit and call.
+- **Shared records between organisations** that do not want one party to be the system of record (supply chains, settlement between institutions, registries).
+- **Verifiable timestamping and provenance:** proving a document or dataset existed and was not changed.
+- **Censorship resistance** for people who cannot rely on a local institution.
+- **Coordination systems:** DAOs and on-chain voting (with serious governance caveats).
+
+**Where a normal database is better:** one organisation controls the data; you need high throughput and low latency; you need to delete or correct data (GDPR-style erasure conflicts with immutability); data is private and confidentiality matters more than auditability.
+
+**A quick decision test.** A blockchain is worth considering only if: (1) several parties write to shared state, (2) they do not fully trust each other or any single operator, (3) no trusted intermediary can or should be placed in the middle, and (4) a public audit trail is a benefit and not a liability. If any answer is no, use a database.
+
+**Known limits to be honest about:** low throughput compared with centralised systems (the *scalability trilemma* of decentralisation, security and scale), high latency to finality, transparency that conflicts with privacy, irreversible mistakes, and a lot of hype, speculation and fraud in the surrounding ecosystem. Understanding the limits is part of understanding the technology.
+
+---
+
+### Module 14: Go skills you need before you start
+
+| Skill | Used for |
+| --- | --- |
+| Interfaces and dependency injection | `Transport`, `Validator`, `Storage` |
+| Goroutines, channels, `select` | server main loop, per-peer readers |
+| `sync.Mutex` / `RWMutex`, `sync/atomic` | chain, pool, peer map |
+| `context.Context` | shutdown and timeouts |
+| `io.Reader` / `io.Writer`, `bufio`, `io.ReadFull` | framing and encoding |
+| `encoding/binary`, `encoding/gob`, `encoding/json` | serialisation |
+| `crypto/sha256`, `crypto/ed25519`, `crypto/ecdsa`, `crypto/rand` | hashing and signatures (never `math/rand` for keys) |
+| `math/big` | difficulty targets and big integers |
+| `net`, `net/http` | P2P and API |
+| `testing`, table-driven tests, `-race`, fuzzing (`go test -fuzz`) | correctness of decoders and validators |
+| Error wrapping (`%w`, `errors.Is`) | meaningful validation errors |
+| `go vet`, `gofmt` | hygiene |
+
+Two Go-specific traps to learn now: **never ranging over a map where order matters**, and **data races in a shared chain structure**. Run every test with `-race`.
+
+---
+
+### Module 15: The capstone ladder (your own primitive blockchain)
+
+Build these in order. Each stage should compile, pass its tests and be demo-able before you move on. Each one corresponds to modules above and, afterwards, to the ProjectX videos in section 10.
+
+| Stage | Build | Proves you understand | Then watch |
+| --- | --- | --- | --- |
+| 1 | Hash chain with `Validate()` | modules 1 and 3 | videos 2, 5 |
+| 2 | Merkle root in the header | module 3 | video 2 (DataHash) |
+| 3 | Keypairs and signed transactions | module 2 | videos 3, 4 |
+| 4 | Canonical encoding and tx hashing | module 4 | videos 2, 4 |
+| 5 | Account state with nonces and `Apply` | module 5 | videos 25, 26 |
+| 6 | Block validator (height, prev hash, signatures) | modules 3 and 7 | video 6 |
+| 7 | Mempool with dedupe and ordering | module 9 | videos 7, 8 |
+| 8 | In-process multi-node network with a `Transport` interface | module 6 | video 1 |
+| 9 | Single-validator block production on a timer (PoA) | module 7.1 | videos 11, 12 |
+| 10 | Gossip of txs and blocks | module 8 | videos 9, 10, 13 |
+| 11 | TCP transport with framing and handshake | module 8 | video 19 |
+| 12 | Chain sync for late joiners | module 8 | videos 18, 20 |
+| 13 | Proof of work as an alternative producer, with fork choice | module 7.2 | not in the series |
+| 14 | Tiny VM with gas and contract storage | module 10 | videos 14 to 17 |
+| 15 | Persistence to disk with crash recovery | module 11 | not in the series |
+| 16 | HTTP/JSON API | module 14 | videos 22, 23 |
+
+Stages 13 and 15 are not in the series. They are your own work, and they are the ones that turn watching into understanding.
+
+**Suggested pacing**
+
+- Weeks 1 to 2: modules 0 to 3, stages 1 to 3
+- Weeks 3 to 4: modules 4 to 5, stages 4 to 6
+- Weeks 5 to 6: modules 6 to 8, stages 7 to 10
+- Weeks 7 to 8: modules 7.2, 9, 10, stages 11 to 14
+- Weeks 9 to 10: modules 11 to 13, stages 15 to 16, and the security review
+- Weeks 11 to 12: re-watch the series with your own code open and diff the designs
+
+---
+
+### The "100 percent" self-test
+
+You understand blockchains when you can answer all of these from memory, with code or a whiteboard, without notes:
+
+1. What problem does a blockchain solve that a database does not, and when is a database the better answer?
+2. Why is the order of transactions the real problem, and how does a double spend show it?
+3. Walk a transaction from a user's wallet to being final, naming every component it touches.
+4. What exactly does the hash of a block cover, and how does that make history tamper-evident? What does it *not* protect against?
+5. How does a Merkle proof work, and why can a light client verify a payment without the full chain?
+6. Why must every operation that affects state be deterministic? Name five ways Go code could accidentally violate that.
+7. Explain Proof of Work, Proof of Authority, Proof of Stake and BFT voting: who proposes, how others accept, what finality looks like, and what the attacker must control.
+8. What is a fork, and how does your node decide which branch to follow?
+9. How does a brand-new node join a network and trust what it downloads?
+10. What is gas for, and what would happen without it?
+11. Describe three attacks against your own implementation and the code that stops each.
+12. Which parts of your design would not scale, and how would a production chain address each?
+
+---
+
+### After you have built your own: industry tools and how they map
+
+Only after the capstone, look at the following. Because you built the primitive version, each will read as "their version of my component", not as magic.
+
+| Your component | Production equivalents to study |
+| --- | --- |
+| Whole node, execution and account model | Ethereum clients (such as go-ethereum), the EVM, Solidity |
+| Consensus | CometBFT (Tendermint family), Ethereum's proof-of-stake protocol, Bitcoin's PoW |
+| Application framework | Cosmos SDK, Substrate (Rust) |
+| P2P | libp2p, Kademlia DHTs, gossipsub |
+| Serialisation | Protobuf, RLP, SSZ |
+| Storage | LevelDB, RocksDB, Pebble, Merkle-Patricia and Verkle tries |
+| Virtual machines | EVM, WebAssembly runtimes, Move VM |
+| Scaling | rollups (optimistic and zero-knowledge), data availability layers, sharding |
+| Cryptography beyond signatures | threshold and BLS signatures, zero-knowledge proofs |
+
+The best next reads are the Bitcoin whitepaper (9 pages), the Ethereum whitepaper and the Ethereum yellow paper's overview, and the Tendermint paper. With your own implementation behind you, they will be readable.
